@@ -1,9 +1,10 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback } from "react";
 import UploadZone from "./components/UploadZone";
 import DocumentQueue from "./components/DocumentQueue";
 import HumanReview from "./components/HumanReview";
 import ResultsPanel from "./components/ResultsPanel";
 import Header from "./components/Header";
+import { processDocument, approveDocument, rejectDocument } from "./services/api";
 import "./styles/global.css";
 
 export default function App() {
@@ -27,89 +28,153 @@ export default function App() {
     }));
     setDocuments((prev) => [...prev, ...newDocs]);
     setActiveTab("queue");
-    simulateProcessing(newDocs);
+    processDocuments(newDocs);
   }, []);
 
-  const simulateProcessing = (docs) => {
-    docs.forEach((doc) => {
-      // Simulate upload progress
-      let progress = 0;
-      const uploadInterval = setInterval(() => {
-        progress += Math.random() * 20 + 5;
-        if (progress >= 100) {
-          progress = 100;
-          clearInterval(uploadInterval);
+  const processDocuments = (docs) => {
+    docs.forEach(async (doc) => {
+
+      // Show analyzing state immediately
+      setDocuments((prev) =>
+        prev.map((d) =>
+          d.id === doc.id ? { ...d, status: "analyzing", progress: 30 } : d
+        )
+      );
+
+      try {
+        // Tick progress to 60 while waiting for Logic App
+        const progressTimer = setInterval(() => {
           setDocuments((prev) =>
             prev.map((d) =>
-              d.id === doc.id ? { ...d, progress: 100, status: "analyzing" } : d
+              d.id === doc.id && d.progress < 90
+                ? { ...d, progress: d.progress + 5 }
+                : d
             )
           );
-          // Simulate Azure analysis
-          setTimeout(() => {
-            const confidence = Math.random();
-            const result = generateMockResult(doc, confidence);
+        }, 800);
 
-            setDocuments((prev) =>
-              prev.map((d) =>
-                d.id === doc.id
-                  ? {
-                      ...d,
-                      status: confidence < 0.75 ? "needs_review" : "completed",
-                      confidence,
-                      result,
-                    }
-                  : d
-              )
-            );
+        // Call real Logic App backend via Netlify proxy
+        const res = await processDocument(doc.file);
 
-            if (confidence < 0.75) {
-              setReviewQueue((prev) => [
-                ...prev,
-                {
-                  ...doc,
-                  status: "pending_review",
-                  confidence,
-                  result,
-                },
-              ]);
-            } else {
-              setProcessedDocs((prev) => [
-                ...prev,
-                { ...doc, confidence, result, reviewedAt: new Date().toISOString() },
-              ]);
-            }
-          }, 2000 + Math.random() * 2000);
-        }
+        clearInterval(progressTimer);
+
+        const result = res.document;
+
+        // Normalise the result shape to match what the UI components expect
+        const normalisedResult = {
+          documentType:    result.documentType   || "Document",
+          confidence:      result.confidence     || 0,
+          extractedFields: result.extractedFields || {},
+          tags:            result.tags            || [],
+          processingTime:  result.processingTime  || "—",
+          model:           result.model           || "azure-content-understanding",
+          rawText:         result.rawText         || "",
+        };
+
         setDocuments((prev) =>
-          prev.map((d) => (d.id === doc.id ? { ...d, progress } : d))
+          prev.map((d) =>
+            d.id === doc.id
+              ? {
+                  ...d,
+                  progress:  100,
+                  status:    result.status,
+                  confidence: result.confidence,
+                  result:    normalisedResult,
+                  backendId: result.id,
+                }
+              : d
+          )
         );
-      }, 200);
+
+        if (result.status === "needs_review") {
+          setReviewQueue((prev) => [
+            ...prev,
+            {
+              ...doc,
+              status:     "pending_review",
+              confidence: result.confidence,
+              result:     normalisedResult,
+              backendId:  result.id,
+            },
+          ]);
+        } else {
+          setProcessedDocs((prev) => [
+            ...prev,
+            {
+              ...doc,
+              confidence:   result.confidence,
+              result:       normalisedResult,
+              backendId:    result.id,
+              humanReviewed: false,
+              reviewedAt:   new Date().toISOString(),
+            },
+          ]);
+        }
+
+      } catch (err) {
+        console.error("Processing failed for", doc.name, err);
+        setDocuments((prev) =>
+          prev.map((d) =>
+            d.id === doc.id
+              ? { ...d, status: "rejected", progress: 100 }
+              : d
+          )
+        );
+      }
     });
   };
 
-  const handleReviewApprove = (docId, correctedData) => {
+  const handleReviewApprove = async (docId, correctedData) => {
     const doc = reviewQueue.find((d) => d.id === docId);
-    if (doc) {
-      const reviewed = {
-        ...doc,
-        status: "completed",
-        result: correctedData || doc.result,
-        humanReviewed: true,
-        reviewedAt: new Date().toISOString(),
-      };
-      setProcessedDocs((prev) => [...prev, reviewed]);
-      setReviewQueue((prev) =>
-        prev.map((d) => (d.id === docId ? { ...d, status: "approved" } : d))
-      );
-      setDocuments((prev) =>
-        prev.map((d) => (d.id === docId ? { ...d, status: "completed" } : d))
-      );
+    if (!doc) return;
+
+    // Call backend first if we have a backendId
+    if (doc.backendId) {
+      try {
+        await approveDocument(
+          doc.backendId,
+          correctedData?.extractedFields,
+          correctedData?.documentType
+        );
+      } catch (err) {
+        console.error("Approve API call failed:", err);
+        // Continue with UI update even if API fails
+      }
     }
+
+    const reviewed = {
+      ...doc,
+      status:        "completed",
+      result:        correctedData || doc.result,
+      humanReviewed: true,
+      reviewedAt:    new Date().toISOString(),
+    };
+
+    setProcessedDocs((prev) => [...prev, reviewed]);
+    setReviewQueue((prev) =>
+      prev.map((d) => (d.id === docId ? { ...d, status: "approved" } : d))
+    );
+    setDocuments((prev) =>
+      prev.map((d) => (d.id === docId ? { ...d, status: "completed" } : d))
+    );
   };
 
-  const handleReviewReject = (docId, reason) => {
+  const handleReviewReject = async (docId, reason) => {
+    const doc = reviewQueue.find((d) => d.id === docId);
+
+    // Call backend if we have a backendId
+    if (doc?.backendId) {
+      try {
+        await rejectDocument(doc.backendId, reason);
+      } catch (err) {
+        console.error("Reject API call failed:", err);
+      }
+    }
+
     setReviewQueue((prev) =>
-      prev.map((d) => (d.id === docId ? { ...d, status: "rejected", rejectReason: reason } : d))
+      prev.map((d) =>
+        d.id === docId ? { ...d, status: "rejected", rejectReason: reason } : d
+      )
     );
     setDocuments((prev) =>
       prev.map((d) => (d.id === docId ? { ...d, status: "rejected" } : d))
@@ -171,25 +236,4 @@ export default function App() {
       </main>
     </div>
   );
-}
-
-function generateMockResult(doc, confidence) {
-  const docTypes = ["Invoice", "Contract", "Receipt", "ID Document", "Medical Record", "Legal Filing"];
-  const docType = docTypes[Math.floor(Math.random() * docTypes.length)];
-  return {
-    documentType: docType,
-    confidence: confidence,
-    extractedFields: {
-      documentId: `DOC-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
-      date: new Date(Date.now() - Math.random() * 365 * 24 * 60 * 60 * 1000).toLocaleDateString(),
-      amount: docType === "Invoice" || docType === "Receipt" ? `$${(Math.random() * 10000).toFixed(2)}` : null,
-      vendor: docType === "Invoice" ? ["Acme Corp", "TechSupply Ltd", "Global Services"][Math.floor(Math.random() * 3)] : null,
-      language: "English",
-      pages: Math.ceil(Math.random() * 5),
-    },
-    tags: ["processed", docType.toLowerCase().replace(" ", "_"), confidence > 0.75 ? "high-confidence" : "low-confidence"],
-    rawText: `[Extracted text from ${doc.name} — ${Math.floor(Math.random() * 500 + 100)} words]`,
-    processingTime: `${(Math.random() * 3 + 0.5).toFixed(2)}s`,
-    model: "azure-content-understanding-v1",
-  };
 }
