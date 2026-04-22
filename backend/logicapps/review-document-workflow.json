@@ -1,0 +1,186 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "blob_container_results": {
+        "type": "string",
+        "defaultValue": "processed-results"
+      }
+    },
+    "triggers": {
+      "HTTP_Trigger": {
+        "type": "Request",
+        "kind": "Http",
+        "inputs": {
+          "schema": {
+            "type": "object",
+            "properties": {
+              "documentId":            { "type": "string" },
+              "action":                { "type": "string", "enum": ["approve", "reject"] },
+              "correctedFields":       { "type": "object" },
+              "correctedDocumentType": { "type": "string" },
+              "reason":                { "type": "string" }
+            },
+            "required": ["documentId", "action"]
+          }
+        }
+      }
+    },
+    "actions": {
+
+      "Get_Document_from_CosmosDB": {
+        "type": "ApiConnection",
+        "inputs": {
+          "host": {
+            "connection": { "name": "@parameters('$connections')['documentdb']['connectionId']" }
+          },
+          "method": "get",
+          "path": "/dbs/docintel/colls/documents/docs/@{encodeURIComponent(triggerBody()?['documentId'])}"
+        },
+        "runAfter": {}
+      },
+
+      "Switch_Action": {
+        "type": "Switch",
+        "expression": "@triggerBody()?['action']",
+        "cases": {
+
+          "Approve": {
+            "case": "approve",
+            "actions": {
+              "Compose_Approved_Record": {
+                "type": "Compose",
+                "inputs": {
+                  "id":             "@body('Get_Document_from_CosmosDB')?['id']",
+                  "filename":       "@body('Get_Document_from_CosmosDB')?['filename']",
+                  "status":         "completed",
+                  "confidence":     "@body('Get_Document_from_CosmosDB')?['confidence']",
+                  "needsReview":    false,
+                  "humanReviewed":  true,
+                  "reviewedAt":     "@utcNow()",
+                  "documentType":   "@coalesce(triggerBody()?['correctedDocumentType'], body('Get_Document_from_CosmosDB')?['documentType'])",
+                  "extractedFields":"@coalesce(triggerBody()?['correctedFields'], body('Get_Document_from_CosmosDB')?['extractedFields'])",
+                  "rawText":        "@body('Get_Document_from_CosmosDB')?['rawText']",
+                  "model":          "@body('Get_Document_from_CosmosDB')?['model']",
+                  "uploadedAt":     "@body('Get_Document_from_CosmosDB')?['uploadedAt']",
+                  "tags":           "@body('Get_Document_from_CosmosDB')?['tags']"
+                }
+              },
+              "Upsert_Approved_CosmosDB": {
+                "type": "ApiConnection",
+                "inputs": {
+                  "host": {
+                    "connection": { "name": "@parameters('$connections')['documentdb']['connectionId']" }
+                  },
+                  "method": "post",
+                  "path": "/dbs/docintel/colls/documents/docs",
+                  "headers": { "x-ms-documentdb-is-upsert": "true" },
+                  "body": "@outputs('Compose_Approved_Record')"
+                },
+                "runAfter": { "Compose_Approved_Record": ["Succeeded"] }
+              },
+              "Export_Approved_to_Blob": {
+                "type": "ApiConnection",
+                "inputs": {
+                  "host": {
+                    "connection": { "name": "@parameters('$connections')['azureblob']['connectionId']" }
+                  },
+                  "method": "post",
+                  "path": "/v2/datasets/@{encodeURIComponent(encodeURIComponent('AccountNameFromSettings'))}/files",
+                  "queries": {
+                    "folderPath": "@{parameters('blob_container_results')}",
+                    "name":       "@{body('Get_Document_from_CosmosDB')?['id']}.json",
+                    "queryParametersSingleEncoded": true
+                  },
+                  "body": "@outputs('Compose_Approved_Record')"
+                },
+                "runAfter": { "Upsert_Approved_CosmosDB": ["Succeeded"] }
+              },
+              "Response_Approved": {
+                "type": "Response",
+                "inputs": {
+                  "statusCode": 200,
+                  "headers": {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*"
+                  },
+                  "body": {
+                    "success": true,
+                    "document": "@outputs('Compose_Approved_Record')"
+                  }
+                },
+                "runAfter": { "Export_Approved_to_Blob": ["Succeeded"] }
+              }
+            }
+          },
+
+          "Reject": {
+            "case": "reject",
+            "actions": {
+              "Compose_Rejected_Record": {
+                "type": "Compose",
+                "inputs": {
+                  "id":             "@body('Get_Document_from_CosmosDB')?['id']",
+                  "filename":       "@body('Get_Document_from_CosmosDB')?['filename']",
+                  "status":         "rejected",
+                  "confidence":     "@body('Get_Document_from_CosmosDB')?['confidence']",
+                  "needsReview":    false,
+                  "humanReviewed":  true,
+                  "reviewedAt":     "@utcNow()",
+                  "rejectReason":   "@coalesce(triggerBody()?['reason'], 'Rejected by reviewer')",
+                  "documentType":   "@body('Get_Document_from_CosmosDB')?['documentType']",
+                  "extractedFields":"@body('Get_Document_from_CosmosDB')?['extractedFields']",
+                  "rawText":        "@body('Get_Document_from_CosmosDB')?['rawText']",
+                  "model":          "@body('Get_Document_from_CosmosDB')?['model']",
+                  "uploadedAt":     "@body('Get_Document_from_CosmosDB')?['uploadedAt']",
+                  "tags":           "@body('Get_Document_from_CosmosDB')?['tags']"
+                }
+              },
+              "Upsert_Rejected_CosmosDB": {
+                "type": "ApiConnection",
+                "inputs": {
+                  "host": {
+                    "connection": { "name": "@parameters('$connections')['documentdb']['connectionId']" }
+                  },
+                  "method": "post",
+                  "path": "/dbs/docintel/colls/documents/docs",
+                  "headers": { "x-ms-documentdb-is-upsert": "true" },
+                  "body": "@outputs('Compose_Rejected_Record')"
+                },
+                "runAfter": { "Compose_Rejected_Record": ["Succeeded"] }
+              },
+              "Response_Rejected": {
+                "type": "Response",
+                "inputs": {
+                  "statusCode": 200,
+                  "headers": {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*"
+                  },
+                  "body": {
+                    "success": true,
+                    "document": "@outputs('Compose_Rejected_Record')"
+                  }
+                },
+                "runAfter": { "Upsert_Rejected_CosmosDB": ["Succeeded"] }
+              }
+            }
+          }
+        },
+        "default": {
+          "actions": {
+            "Response_Invalid_Action": {
+              "type": "Response",
+              "inputs": {
+                "statusCode": 400,
+                "body": { "success": false, "error": "Action must be approve or reject" }
+              }
+            }
+          }
+        },
+        "runAfter": { "Get_Document_from_CosmosDB": ["Succeeded"] }
+      }
+    }
+  }
+}

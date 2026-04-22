@@ -1,0 +1,362 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "azure_cu_endpoint": {
+        "type": "string",
+        "defaultValue": "https://jovinkahar-9449-resource.cognitiveservices.azure.com"
+      },
+      "azure_cu_api_version": {
+        "type": "string",
+        "defaultValue": "2025-05-01-preview"
+      },
+      "azure_cu_subscription_key": {
+        "type": "securestring"
+      },
+      "analyzer_id": {
+        "type": "string",
+        "defaultValue": "redacted-idp-epf"
+      },
+      "confidence_threshold": {
+        "type": "float",
+        "defaultValue": 0.75
+      },
+      "blob_container_raw": {
+        "type": "string",
+        "defaultValue": "raw-uploads"
+      },
+      "blob_container_results": {
+        "type": "string",
+        "defaultValue": "processed-results"
+      }
+    },
+    "triggers": {
+      "HTTP_Trigger": {
+        "type": "Request",
+        "kind": "Http",
+        "inputs": {
+          "schema": {
+            "type": "object",
+            "properties": {
+              "fileName":    { "type": "string" },
+              "fileContent": { "type": "string", "description": "Base64-encoded file content" },
+              "contentType": { "type": "string" },
+              "fileUrl":     { "type": "string", "description": "OR provide a URL instead of content" }
+            },
+            "required": ["fileName"]
+          }
+        }
+      }
+    },
+    "actions": {
+
+      "Initialize_DocumentId": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [{
+            "name": "documentId",
+            "type": "string",
+            "value": "@{guid()}"
+          }]
+        },
+        "runAfter": {}
+      },
+
+      "Initialize_AnalysisResult": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [{
+            "name": "analysisResult",
+            "type": "object",
+            "value": {}
+          }]
+        },
+        "runAfter": { "Initialize_DocumentId": ["Succeeded"] }
+      },
+
+      "Initialize_OperationLocation": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [{
+            "name": "operationLocation",
+            "type": "string",
+            "value": ""
+          }]
+        },
+        "runAfter": { "Initialize_AnalysisResult": ["Succeeded"] }
+      },
+
+      "Initialize_PollingStatus": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [{
+            "name": "pollingStatus",
+            "type": "string",
+            "value": "running"
+          }]
+        },
+        "runAfter": { "Initialize_OperationLocation": ["Succeeded"] }
+      },
+
+      "Store_Raw_File_to_Blob": {
+        "type": "ApiConnection",
+        "inputs": {
+          "host": {
+            "connection": { "name": "@parameters('$connections')['azureblob']['connectionId']" }
+          },
+          "method": "post",
+          "path": "/v2/datasets/@{encodeURIComponent(encodeURIComponent('AccountNameFromSettings'))}/files",
+          "queries": {
+            "folderPath": "@{parameters('blob_container_raw')}/@{variables('documentId')}",
+            "name":       "@{triggerBody()?['fileName']}",
+            "queryParametersSingleEncoded": true
+          },
+          "body": "@base64ToBinary(triggerBody()?['fileContent'])"
+        },
+        "runAfter": { "Initialize_PollingStatus": ["Succeeded"] }
+      },
+
+      "Condition_URL_or_Binary": {
+        "type": "If",
+        "expression": {
+          "and": [{
+            "not": {
+              "equals": ["@triggerBody()?['fileUrl']", null]
+            }
+          }]
+        },
+        "actions": {
+          "Submit_Analysis_URL": {
+            "type": "Http",
+            "inputs": {
+              "method": "POST",
+              "uri": "@{parameters('azure_cu_endpoint')}/contentunderstanding/analyzers/@{parameters('analyzer_id')}:analyze?api-version=@{parameters('azure_cu_api_version')}&stringEncoding=utf16",
+              "headers": {
+                "Content-Type": "application/json",
+                "Ocp-Apim-Subscription-Key": "@parameters('azure_cu_subscription_key')",
+                "x-ms-useragent": "docintel-logicapp"
+              },
+              "body": {
+                "url": "@triggerBody()?['fileUrl']"
+              }
+            }
+          },
+          "Set_OperationLocation_URL": {
+            "type": "SetVariable",
+            "inputs": {
+              "name": "operationLocation",
+              "value": "@outputs('Submit_Analysis_URL')['headers']['operation-location']"
+            },
+            "runAfter": { "Submit_Analysis_URL": ["Succeeded"] }
+          }
+        },
+        "else": {
+          "actions": {
+            "Submit_Analysis_Binary": {
+              "type": "Http",
+              "inputs": {
+                "method": "POST",
+                "uri": "@{parameters('azure_cu_endpoint')}/contentunderstanding/analyzers/@{parameters('analyzer_id')}:analyze?api-version=@{parameters('azure_cu_api_version')}&stringEncoding=utf16",
+                "headers": {
+                  "Content-Type": "@{triggerBody()?['contentType']}",
+                  "Ocp-Apim-Subscription-Key": "@parameters('azure_cu_subscription_key')",
+                  "x-ms-useragent": "docintel-logicapp"
+                },
+                "body": "@base64ToBinary(triggerBody()?['fileContent'])"
+              }
+            },
+            "Set_OperationLocation_Binary": {
+              "type": "SetVariable",
+              "inputs": {
+                "name": "operationLocation",
+                "value": "@outputs('Submit_Analysis_Binary')['headers']['operation-location']"
+              },
+              "runAfter": { "Submit_Analysis_Binary": ["Succeeded"] }
+            }
+          }
+        },
+        "runAfter": { "Store_Raw_File_to_Blob": ["Succeeded"] }
+      },
+
+      "Poll_Until_Complete": {
+        "type": "Until",
+        "expression": "@not(equals(variables('pollingStatus'), 'running'))",
+        "limit": {
+          "count": 60,
+          "timeout": "PT10M"
+        },
+        "actions": {
+          "Delay_2_Seconds": {
+            "type": "Wait",
+            "inputs": { "interval": { "count": 2, "unit": "Second" } }
+          },
+          "Get_Analysis_Result": {
+            "type": "Http",
+            "inputs": {
+              "method": "GET",
+              "uri": "@variables('operationLocation')",
+              "headers": {
+                "Ocp-Apim-Subscription-Key": "@parameters('azure_cu_subscription_key')"
+              }
+            },
+            "runAfter": { "Delay_2_Seconds": ["Succeeded"] }
+          },
+          "Check_Poll_Status": {
+            "type": "Switch",
+            "expression": "@toLower(body('Get_Analysis_Result')?['status'])",
+            "cases": {
+              "Succeeded": {
+                "case": "succeeded",
+                "actions": {
+                  "Set_Result": {
+                    "type": "SetVariable",
+                    "inputs": {
+                      "name": "analysisResult",
+                      "value": "@body('Get_Analysis_Result')"
+                    }
+                  },
+                  "Set_Status_Done": {
+                    "type": "SetVariable",
+                    "inputs": {
+                      "name": "pollingStatus",
+                      "value": "succeeded"
+                    },
+                    "runAfter": { "Set_Result": ["Succeeded"] }
+                  }
+                }
+              },
+              "Failed": {
+                "case": "failed",
+                "actions": {
+                  "Set_Status_Failed": {
+                    "type": "SetVariable",
+                    "inputs": {
+                      "name": "pollingStatus",
+                      "value": "failed"
+                    }
+                  }
+                }
+              }
+            },
+            "default": { "actions": {} },
+            "runAfter": { "Get_Analysis_Result": ["Succeeded"] }
+          }
+        },
+        "runAfter": { "Condition_URL_or_Binary": ["Succeeded"] }
+      },
+
+      "Condition_Analysis_Succeeded": {
+        "type": "If",
+        "expression": {
+          "and": [{ "equals": ["@variables('pollingStatus')", "succeeded"] }]
+        },
+        "actions": {
+
+          "Compose_Confidence": {
+            "type": "Compose",
+            "inputs": "@float(coalesce(variables('analysisResult')?['result']?['contents']?[0]?['fields']?['confidence']?['confidence'], 0.8))"
+          },
+
+          "Compose_DocumentType": {
+            "type": "Compose",
+            "inputs": "@coalesce(variables('analysisResult')?['result']?['contents']?[0]?['kind'], 'Document')"
+          },
+
+          "Condition_Needs_Review": {
+            "type": "If",
+            "expression": {
+              "and": [{
+                "less": ["@outputs('Compose_Confidence')", "@parameters('confidence_threshold')"]
+              }]
+            },
+            "actions": {
+              "Set_Status_NeedsReview": {
+                "type": "Compose",
+                "inputs": "needs_review"
+              }
+            },
+            "else": {
+              "actions": {
+                "Set_Status_Completed": {
+                  "type": "Compose",
+                  "inputs": "completed"
+                }
+              }
+            },
+            "runAfter": {
+              "Compose_Confidence": ["Succeeded"],
+              "Compose_DocumentType": ["Succeeded"]
+            }
+          },
+
+          "Compose_Document_Record": {
+            "type": "Compose",
+            "inputs": {
+              "id":             "@variables('documentId')",
+              "filename":       "@triggerBody()?['fileName']",
+              "status":         "@coalesce(outputs('Set_Status_NeedsReview'), outputs('Set_Status_Completed'))",
+              "confidence":     "@outputs('Compose_Confidence')",
+              "needsReview":    "@less(outputs('Compose_Confidence'), parameters('confidence_threshold'))",
+              "documentType":   "@outputs('Compose_DocumentType')",
+              "extractedFields": "@variables('analysisResult')?['result']?['contents']?[0]?['fields']",
+              "rawText":        "@variables('analysisResult')?['result']?['contents']?[0]?['content']",
+              "model":          "@coalesce(variables('analysisResult')?['result']?['modelId'], 'azure-content-understanding')",
+              "uploadedAt":     "@utcNow()",
+              "reviewedAt":     null,
+              "humanReviewed":  false,
+              "tags":           "@createArray('processed', toLower(outputs('Compose_DocumentType')))"
+            },
+            "runAfter": { "Condition_Needs_Review": ["Succeeded"] }
+          },
+
+          "Save_to_CosmosDB": {
+            "type": "ApiConnection",
+            "inputs": {
+              "host": {
+                "connection": { "name": "@parameters('$connections')['documentdb']['connectionId']" }
+              },
+              "method": "post",
+              "path": "/dbs/docintel/colls/documents/docs",
+              "body": "@outputs('Compose_Document_Record')"
+            },
+            "runAfter": { "Compose_Document_Record": ["Succeeded"] }
+          },
+
+          "Response_Success": {
+            "type": "Response",
+            "inputs": {
+              "statusCode": 200,
+              "headers": {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+              },
+              "body": {
+                "success": true,
+                "document": "@outputs('Compose_Document_Record')"
+              }
+            },
+            "runAfter": { "Save_to_CosmosDB": ["Succeeded"] }
+          }
+        },
+        "else": {
+          "actions": {
+            "Response_Failed": {
+              "type": "Response",
+              "inputs": {
+                "statusCode": 422,
+                "headers": { "Content-Type": "application/json" },
+                "body": {
+                  "success": false,
+                  "error": "Azure Content Understanding analysis failed"
+                }
+              }
+            }
+          }
+        },
+        "runAfter": { "Poll_Until_Complete": ["Succeeded"] }
+      }
+    },
+    "outputs": {}
+  }
+}
