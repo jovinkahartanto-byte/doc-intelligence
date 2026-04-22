@@ -6,6 +6,18 @@
   NODE_VERSION = "20"
 
 [[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = "200"
+  from    = "/api/process"
+  to      = "https://prod-25.northcentralus.logic.azure.com:443/workflows/13d983f2244d4d419aa201e9c2bd829e/triggers/manual/paths/invoke?api-version=2016-10-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=Or-_9WlR9WPDq-9hVM1HehYq1WKbUKsxllPo15r4NOg"
+  status  = 200
+  force   = true
+
+[[redirects]]
+  from    = "/api/review"
+  to      = "https://prod-23.northcentralus.logic.azure.com:443/workflows/a1b52953048547daa1ab1e990fec54c5/triggers/When_an_HTTP_request_is_received/paths/invoke?api-version=2016-10-01&sp=%2Ftriggers%2FWhen_an_HTTP_request_is_received%2Frun&sv=1.0&sig=rgcoKXE1OeG3F7vZBSVrQsvQymfVEEzML5ZOsJy8sFI"
+  status  = 200
+  force   = true
+
+[[redirects]]
+  from    = "/*"
+  to      = "/index.html"
+  status  = 200
