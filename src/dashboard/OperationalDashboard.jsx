@@ -634,7 +634,7 @@ export default function Dashboard({ processedDocs = [], reviewQueue = [], docume
                   );
                 })}
                 <div style={{ marginTop:8, padding:"10px 12px", background:"var(--bg)", borderRadius:6, fontSize:11, color:"var(--muted)", borderLeft:"3px solid #f59e0b" }}>
-                  Human Review accounts for <strong style={{ color:"var(--text)" }}>{(MOCK.stageTime.find(s=>s.stage==="Human Review")!.avgMinutes / MOCK.stageTime.reduce((s,d)=>s+d.avgMinutes,0)*100).toFixed(0)}%</strong> of total pipeline time
+                  Human Review accounts for <strong style={{ color:"var(--text)" }}>{((MOCK.stageTime.find(s=>s.stage==="Human Review")?.avgMinutes ?? 0) / MOCK.stageTime.reduce((s,d)=>s+d.avgMinutes,0)*100).toFixed(0)}%</strong> of total pipeline time
                 </div>
               </Card>
 
