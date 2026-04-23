@@ -72,9 +72,10 @@ export default function App() {
         clearInterval(progressTimer);
 
         // Normalise to what UI components expect
+        const avgConf = computeAvgConfidence(result.extractedFields, result.confidence ?? 0);
         const normalisedResult = {
           documentType:    result.documentType    || "Document",
-          confidence:      computeAvgConfidence(result.extractedFields, result.confidence ?? 0),
+          confidence:      avgConf,
           extractedFields: result.extractedFields || {},
           tags:            result.tags            || [],
           processingTime:  result.processingTime  || "—",
@@ -106,10 +107,11 @@ export default function App() {
             ...prev,
             {
               ...doc,
-              status:     "pending_review",
-              confidence: result.confidence,
-              result:     normalisedResult,
-              backendId:  result.id,
+              status:        "pending_review",
+              confidence:    avgConf,
+              avgConfidence: avgConf,
+              result:        normalisedResult,
+              backendId:     result.id,
             },
           ]);
         } else {
@@ -118,7 +120,8 @@ export default function App() {
             ...prev,
             {
               ...doc,
-              confidence:    result.confidence,
+              confidence:    avgConf,
+              avgConfidence: avgConf,
               result:        normalisedResult,
               backendId:     result.id,
               humanReviewed: false,

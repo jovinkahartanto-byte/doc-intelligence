@@ -317,7 +317,7 @@ export default function ResultsPanel({ documents, onApprove, onReject }) {
   );
 
   const fmtConf   = (c) => c == null ? "—" : (c * 100).toFixed(1) + "%";
-  const confColor = (c) => c == null ? "#dc2626" : c >= 0.75 ? "#16a34a" : c >= 0.5 ? "#92400e" : "#dc2626";
+  const confColor = (c) => c == null ? "#94a3b8" : c >= 0.75 ? "#16a34a" : c >= 0.5 ? "#92400e" : "#dc2626";
 
   const handleExportAll = () => {
     const headers = ["Filename","Type","Confidence","Status","Human Reviewed","Uploaded At"];
@@ -381,8 +381,8 @@ export default function ResultsPanel({ documents, onApprove, onReject }) {
               </td>
               <td>{doc.result?.documentType || "—"}</td>
               <td>
-                <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700, color: confColor(doc.confidence) }}>
-                  {fmtConf(doc.confidence)}
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700, color: confColor(doc.avgConfidence ?? doc.confidence) }}>
+                  {fmtConf(doc.avgConfidence ?? doc.confidence)}
                 </span>
               </td>
               <td>
