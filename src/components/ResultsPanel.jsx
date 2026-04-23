@@ -95,14 +95,19 @@ function DocumentResult({ doc, onClose, onApprove, onReject }) {
     if (onApprove) onApprove(doc.id, { ...doc.result, extractedFields: fields });
   };
 
-  // Auto-validate on first render if all confidence >= 75%
+  // Auto-mark as validated if all confidence >= 75% but DON'T close the panel
   const autoValidatedRef = useRef(false);
   useEffect(() => {
     if (allHighConf && !validated && !autoValidatedRef.current && Object.keys(fields).length > 0) {
       autoValidatedRef.current = true;
-      handleValidate();
+      const id = "REC-" + Date.now().toString(36).toUpperCase();
+      setRecordId(id);
+      setValidated(true);
+      setStep(4);
+      // Fire approve in background but don't close
+      if (onApprove) onApprove(doc.id, { ...doc.result, extractedFields: fields });
     }
-  }, [allHighConf, fields]);
+  }, [allHighConf]);
 
   const handleReject = () => {
     if (onReject) onReject(doc.id, "Rejected during review");
@@ -344,7 +349,7 @@ export default function ResultsPanel({ documents, onApprove, onReject }) {
         <DocumentResult
           doc={selected}
           onClose={() => setSelected(null)}
-          onApprove={(id, data) => { if (onApprove) onApprove(id, data); setSelected(null); }}
+          onApprove={(id, data) => { if (onApprove) onApprove(id, data); }}
           onReject={(id, reason) => { if (onReject) onReject(id, reason); setSelected(null); }}
         />
       </div>

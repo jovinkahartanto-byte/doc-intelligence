@@ -136,11 +136,15 @@ function ReviewCard({ doc, onApprove, onReject }) {
     }
   };
 
+  // Show compact approved state
   if (doc.status === "approved") {
     return (
-      <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 10, padding: "14px 18px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontWeight: 500, color: "#0f172a" }}>{doc.name}</span>
-        <span style={{ fontSize: 12, fontWeight: 600, color: "#15803d" }}>✓ Approved</span>
+      <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 10, padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontWeight: 600, color: "#0f172a", fontSize: 14 }}>{doc.name}</div>
+          <div style={{ fontSize: 11, color: "#16a34a", marginTop: 3 }}>Reviewed and approved · {new Date().toLocaleString()}</div>
+        </div>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#15803d", background: "#dcfce7", padding: "4px 14px", borderRadius: 20 }}>✓ Approved</span>
       </div>
     );
   }
@@ -244,8 +248,20 @@ function ReviewCard({ doc, onApprove, onReject }) {
           {/* Actions */}
           <div style={{ padding: "12px 16px", borderTop: "1px solid #e2e8f0", background: "#f8fafc" }}>
             {validated ? (
-              <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 8, padding: "10px 14px" }}>
+              <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <strong style={{ color: "#15803d", fontSize: 13 }}>✓ Approved and saved</strong>
+                <button
+                  onClick={() => {
+                    const rows = Object.entries(fields).map(([k, v]) => [k, v, confs[k] != null ? Math.round(confs[k]*100)+"%" : "—"]);
+                    const csv = [["Field","Value","Confidence"],...rows].map(r=>r.map(c=>`"${c}"`).join(",")).join("\n");
+                    const blob = new Blob([csv],{type:"text/csv"});
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a"); a.href=url; a.download=`${doc.name.replace(/\.[^.]+$/,"")}_approved.csv`; a.click(); URL.revokeObjectURL(url);
+                  }}
+                  style={{ padding:"5px 12px", borderRadius:6, border:"1px solid #86efac", background:"#fff", color:"#15803d", fontSize:11, cursor:"pointer", fontWeight:600 }}
+                >
+                  ↓ Export CSV
+                </button>
               </div>
             ) : (
               <>
