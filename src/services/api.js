@@ -1,8 +1,7 @@
 /**
  * api.js — Frontend API service
- * Calls Logic Apps via Netlify proxy redirects defined in netlify.toml
- * Proxy paths: /api/process  →  process-document Logic App trigger
- *              /api/review   →  review-document  Logic App trigger
+ * After getting 202 from process, polls the review Logic App with action:"get"
+ * to fetch the completed document from Cosmos DB.
  */
 
 const PROCESS_URL = "/api/process";
@@ -12,12 +11,7 @@ const REVIEW_URL  = "/api/review";
 export async function processDocument(file) {
   console.log("[api] processDocument →", file.name, `(${(file.size/1024).toFixed(1)} KB)`);
 
-  let base64;
-  try {
-    base64 = await fileToBase64(file);
-  } catch (e) {
-    throw new Error(`Failed to read file: ${e.message}`);
-  }
+  const base64 = await fileToBase64(file);
 
   let response;
   try {
@@ -31,42 +25,76 @@ export async function processDocument(file) {
       }),
     });
   } catch (networkErr) {
-    console.error("[api] Network error — is the Netlify proxy configured?", networkErr);
     throw new Error(`Network error: ${networkErr.message}`);
   }
 
-  console.log("[api] response status:", response.status);
-
-  // Read body as text first so we can log it regardless of content-type
   const text = await response.text();
-  console.log("[api] response body:", text);
+  console.log("[api] process response:", response.status, text);
 
   if (!response.ok) {
     throw new Error(`Logic App returned HTTP ${response.status}: ${text}`);
   }
 
-  // Parse JSON — Logic App may return empty body on some errors
   let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
+  try { data = JSON.parse(text); } catch {
     throw new Error(`Invalid JSON from Logic App: ${text}`);
   }
 
-  // Logic App returned success:false in the body
-  if (data.success === false) {
-    throw new Error(`Logic App error: ${data.error || JSON.stringify(data)}`);
+  // 202 — Logic App accepted, poll for result
+  const documentId = data.documentId;
+  if (!documentId) throw new Error("No documentId in response");
+
+  console.log("[api] polling for result, documentId:", documentId);
+  return await pollForResult(documentId);
+}
+
+// ── Poll review Logic App until document is complete ─────────────────────────
+async function pollForResult(documentId, maxAttempts = 40, intervalMs = 5000) {
+  for (let i = 0; i < maxAttempts; i++) {
+    await sleep(intervalMs);
+    console.log(`[api] poll attempt ${i + 1}/${maxAttempts} for ${documentId}`);
+
+    try {
+      const response = await fetch(REVIEW_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          documentId,
+          action: "get",
+        }),
+      });
+
+      const text = await response.text();
+      console.log("[api] poll response:", response.status, text.substring(0, 200));
+
+      if (!response.ok) {
+        console.warn("[api] poll not ready, retrying...");
+        continue;
+      }
+
+      const data = JSON.parse(text);
+      const doc  = data.document || data;
+
+      // Still processing — keep polling
+      if (!doc || !doc.status || doc.status === "processing") {
+        console.log("[api] document still processing, waiting...");
+        continue;
+      }
+
+      console.log("[api] ✓ document ready — status:", doc.status, "confidence:", doc.confidence);
+      return { document: doc };
+
+    } catch (err) {
+      console.warn("[api] poll error, retrying:", err.message);
+    }
   }
 
-  // Handle both { document: {...} } and flat { id, status, ... } shapes
-  if (data.document) return data;
-  return { document: data };
+  throw new Error("Timed out waiting for document. Check Logic App Runs history in Azure Portal.");
 }
 
 // ── Approve Document ──────────────────────────────────────────────────────────
 export async function approveDocument(documentId, correctedFields, correctedDocumentType) {
   console.log("[api] approveDocument →", documentId);
-
   const response = await fetch(REVIEW_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -77,21 +105,15 @@ export async function approveDocument(documentId, correctedFields, correctedDocu
       ...(correctedDocumentType && { correctedDocumentType }),
     }),
   });
-
   const text = await response.text();
-  console.log("[api] approve response:", response.status, text);
-
-  if (!response.ok) {
-    throw new Error(`Approve failed HTTP ${response.status}: ${text}`);
-  }
-
+  console.log("[api] approve:", response.status, text);
+  if (!response.ok) throw new Error(`Approve failed ${response.status}: ${text}`);
   try { return JSON.parse(text); } catch { return {}; }
 }
 
 // ── Reject Document ───────────────────────────────────────────────────────────
 export async function rejectDocument(documentId, reason) {
-  console.log("[api] rejectDocument →", documentId, reason);
-
+  console.log("[api] rejectDocument →", documentId);
   const response = await fetch(REVIEW_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -101,18 +123,13 @@ export async function rejectDocument(documentId, reason) {
       reason: reason || "Rejected by reviewer",
     }),
   });
-
   const text = await response.text();
-  console.log("[api] reject response:", response.status, text);
-
-  if (!response.ok) {
-    throw new Error(`Reject failed HTTP ${response.status}: ${text}`);
-  }
-
+  console.log("[api] reject:", response.status, text);
+  if (!response.ok) throw new Error(`Reject failed ${response.status}: ${text}`);
   try { return JSON.parse(text); } catch { return {}; }
 }
 
-// ── Helper ────────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -120,4 +137,8 @@ function fileToBase64(file) {
     reader.onerror = () => reject(new Error("FileReader failed"));
     reader.readAsDataURL(file);
   });
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
