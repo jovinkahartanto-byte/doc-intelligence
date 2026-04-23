@@ -7,6 +7,20 @@ function flattenToFieldRows(extractedFields) {
   const fields = {};
   const confs  = {};
 
+  const extractValue = (val) => {
+    if (typeof val !== "object" || val === null) return String(val ?? "");
+    if (val.valueNumber !== undefined) return String(val.valueNumber);
+    if (val.valueString !== undefined) return val.valueString;
+    if (val.valueDate   !== undefined) return val.valueDate;
+    if (val.content     !== undefined) return val.content;
+    return "";
+  };
+
+  const extractConf = (val) => {
+    if (typeof val !== "object" || val === null) return null;
+    return typeof val.confidence === "number" ? val.confidence : null;
+  };
+
   // Handle EmployeeRecords array (payroll format)
   const empRecords = extractedFields.EmployeeRecords?.valueArray || extractedFields.EmployeeRecords;
   if (Array.isArray(empRecords)) {
@@ -14,13 +28,9 @@ function flattenToFieldRows(extractedFields) {
       const obj = item.valueObject || item;
       const rowNum = idx + 1;
       Object.entries(obj).forEach(([key, val]) => {
-        if (typeof val === "object" && val !== null) {
-          const label = `Row ${rowNum}: ${key}`;
-          fields[label] = val.valueNumber !== undefined ? String(val.valueNumber)
-                        : val.valueString !== undefined ? val.valueString
-                        : val.content || "";
-          confs[label] = val.confidence || 0;
-        }
+        const label = `Row ${rowNum}: ${key}`;
+        fields[label] = extractValue(val);
+        confs[label]  = extractConf(val);
       });
     });
     return { fields, confs };
@@ -28,19 +38,14 @@ function flattenToFieldRows(extractedFields) {
 
   // Generic fields fallback
   Object.entries(extractedFields).forEach(([key, val]) => {
-    if (typeof val === "object" && val !== null) {
-      fields[key] = val.valueString ?? (val.valueNumber !== undefined ? String(val.valueNumber) : val.content || "");
-      confs[key]  = val.confidence || 0;
-    } else {
-      fields[key] = String(val ?? "");
-      confs[key]  = 0;
-    }
+    fields[key] = extractValue(val);
+    confs[key]  = extractConf(val);
   });
   return { fields, confs };
 }
 
 function confBadge(c) {
-  if (!c || c === 0) return { cls: "badge-none", label: "—" };
+  if (c === null || c === undefined) return { cls: "badge-none", label: "—" };
   const pct = Math.round(c * 100) + "%";
   if (c >= 0.9) return { cls: "badge-high", label: pct };
   if (c >= 0.7) return { cls: "badge-med",  label: pct };
@@ -50,9 +55,10 @@ function confBadge(c) {
 function countByConf(confs) {
   let high = 0, med = 0, low = 0;
   Object.values(confs).forEach(c => {
+    if (c === null || c === undefined) return;
     if (c >= 0.9) high++;
     else if (c >= 0.7) med++;
-    else if (c > 0) low++;
+    else low++;
   });
   return { high, med, low, total: Object.keys(confs).length };
 }
