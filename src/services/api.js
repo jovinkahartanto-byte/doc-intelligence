@@ -1,7 +1,6 @@
 /**
  * api.js — Frontend API service
- * After getting 202 from process, polls the review Logic App with action:"get"
- * to fetch the completed document from Cosmos DB.
+ * Polls /api/review (Blob Storage via Logic App) for results
  */
 
 const PROCESS_URL = "/api/process";
@@ -25,71 +24,80 @@ export async function processDocument(file) {
       }),
     });
   } catch (networkErr) {
-    throw new Error(`Network error: ${networkErr.message}`);
+    throw new Error(`Network error calling /api/process: ${networkErr.message}`);
   }
 
   const text = await response.text();
-  console.log("[api] process response:", response.status, text);
+  console.log("[api] /api/process response:", response.status, text.substring(0, 300));
 
   if (!response.ok) {
-    throw new Error(`Logic App returned HTTP ${response.status}: ${text}`);
+    throw new Error(`/api/process returned HTTP ${response.status}: ${text}`);
   }
 
   let data;
   try { data = JSON.parse(text); } catch {
-    throw new Error(`Invalid JSON from Logic App: ${text}`);
+    throw new Error(`/api/process returned invalid JSON: ${text}`);
   }
 
-  // 202 — Logic App accepted, poll for result
   const documentId = data.documentId;
-  if (!documentId) throw new Error("No documentId in response");
+  if (!documentId) throw new Error(`No documentId in process response: ${text}`);
 
-  console.log("[api] polling for result, documentId:", documentId);
+  console.log("[api] got documentId:", documentId, "— polling for result...");
   return await pollForResult(documentId);
 }
 
-// ── Poll review Logic App until document is complete ─────────────────────────
-async function pollForResult(documentId, maxAttempts = 40, intervalMs = 5000) {
+// ── Poll review Logic App until blob is ready ─────────────────────────────────
+async function pollForResult(documentId, maxAttempts = 40, intervalMs = 4000) {
   for (let i = 0; i < maxAttempts; i++) {
     await sleep(intervalMs);
-    console.log(`[api] poll attempt ${i + 1}/${maxAttempts} for ${documentId}`);
+    console.log(`[api] poll ${i + 1}/${maxAttempts} — documentId: ${documentId}`);
 
+    let response, text;
     try {
-      const response = await fetch(REVIEW_URL, {
+      response = await fetch(REVIEW_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          documentId,
-          action: "get",
-        }),
+        body: JSON.stringify({ documentId, action: "get" }),
       });
-
-      const text = await response.text();
-      console.log("[api] poll response:", response.status, text.substring(0, 200));
-
-      if (!response.ok) {
-        console.warn("[api] poll not ready, retrying...");
-        continue;
-      }
-
-      const data = JSON.parse(text);
-      const doc  = data.document || data;
-
-      // Still processing — keep polling
-      if (!doc || !doc.status || doc.status === "processing") {
-        console.log("[api] document still processing, waiting...");
-        continue;
-      }
-
-      console.log("[api] ✓ document ready — status:", doc.status, "confidence:", doc.confidence);
-      return { document: doc };
-
-    } catch (err) {
-      console.warn("[api] poll error, retrying:", err.message);
+      text = await response.text();
+      console.log(`[api] poll ${i + 1} — HTTP ${response.status} — ${text.substring(0, 200)}`);
+    } catch (networkErr) {
+      console.warn(`[api] poll ${i + 1} — network error: ${networkErr.message}`);
+      continue;
     }
+
+    // 404 = blob not written yet, analysis still running — keep polling
+    if (response.status === 404) {
+      console.log(`[api] poll ${i + 1} — blob not ready yet, waiting...`);
+      continue;
+    }
+
+    if (!response.ok) {
+      console.warn(`[api] poll ${i + 1} — HTTP ${response.status}, retrying...`);
+      continue;
+    }
+
+    let data;
+    try { data = JSON.parse(text); } catch {
+      console.warn("[api] poll — invalid JSON, retrying...");
+      continue;
+    }
+
+    const doc = data.document || data;
+
+    // Still processing — keep polling
+    if (!doc || !doc.status || doc.status === "processing") {
+      console.log(`[api] poll ${i + 1} — status: ${doc?.status || "unknown"}, still waiting...`);
+      continue;
+    }
+
+    console.log(`[api] ✓ document ready — status: ${doc.status}, confidence: ${doc.confidence}`);
+    return { document: doc };
   }
 
-  throw new Error("Timed out waiting for document. Check Logic App Runs history in Azure Portal.");
+  throw new Error(
+    `Timed out after ${maxAttempts} polls. Check Azure Portal → idp-logicapps → Runs history.`
+  );
 }
 
 // ── Approve Document ──────────────────────────────────────────────────────────
@@ -106,7 +114,7 @@ export async function approveDocument(documentId, correctedFields, correctedDocu
     }),
   });
   const text = await response.text();
-  console.log("[api] approve:", response.status, text);
+  console.log("[api] approve:", response.status, text.substring(0, 200));
   if (!response.ok) throw new Error(`Approve failed ${response.status}: ${text}`);
   try { return JSON.parse(text); } catch { return {}; }
 }
@@ -124,7 +132,7 @@ export async function rejectDocument(documentId, reason) {
     }),
   });
   const text = await response.text();
-  console.log("[api] reject:", response.status, text);
+  console.log("[api] reject:", response.status, text.substring(0, 200));
   if (!response.ok) throw new Error(`Reject failed ${response.status}: ${text}`);
   try { return JSON.parse(text); } catch { return {}; }
 }
