@@ -7,6 +7,20 @@ import Header from "./components/Header";
 import { processDocument, approveDocument, rejectDocument } from "./services/api";
 import "./styles/global.css";
 
+// Compute real average confidence from Azure CU extractedFields
+function computeAvgConfidence(extractedFields, fallback) {
+  if (!extractedFields) return fallback;
+  const confs = [];
+  const collect = (obj) => {
+    if (!obj || typeof obj !== "object") return;
+    if (typeof obj.confidence === "number") confs.push(obj.confidence);
+    Object.values(obj).forEach(v => { if (typeof v === "object") collect(v); });
+  };
+  collect(extractedFields);
+  if (!confs.length) return fallback;
+  return confs.reduce((a, b) => a + b, 0) / confs.length;
+}
+
 export default function App() {
   const [documents, setDocuments]         = useState([]);
   const [activeTab, setActiveTab]         = useState("upload");
@@ -60,7 +74,7 @@ export default function App() {
         // Normalise to what UI components expect
         const normalisedResult = {
           documentType:    result.documentType    || "Document",
-          confidence:      result.confidence      ?? 0,
+          confidence:      computeAvgConfidence(result.extractedFields, result.confidence ?? 0),
           extractedFields: result.extractedFields || {},
           tags:            result.tags            || [],
           processingTime:  result.processingTime  || "—",

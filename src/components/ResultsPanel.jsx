@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 // ── Flatten Azure CU EmployeeRecords array into flat field rows ───────────────
 function flattenToFieldRows(extractedFields) {
@@ -77,6 +77,16 @@ function DocumentResult({ doc, onClose, onApprove, onReject }) {
   const confidence = doc.confidence;
   const fmtConf = (c) => c == null ? "—" : (c * 100).toFixed(1) + "%";
 
+  // Compute average confidence from all extracted fields
+  const avgConfidence = (() => {
+    const vals = Object.values(confs).filter(c => c !== null && c !== undefined);
+    if (!vals.length) return null;
+    return vals.reduce((a, b) => a + b, 0) / vals.length;
+  })();
+
+  // Auto-validate if ALL field confidences >= 75%
+  const allHighConf = Object.values(confs).every(c => c === null || c >= 0.75);
+
   const handleValidate = () => {
     const id = "REC-" + Date.now().toString(36).toUpperCase();
     setRecordId(id);
@@ -84,6 +94,15 @@ function DocumentResult({ doc, onClose, onApprove, onReject }) {
     setStep(4);
     if (onApprove) onApprove(doc.id, { ...doc.result, extractedFields: fields });
   };
+
+  // Auto-validate on first render if all confidence >= 75%
+  const autoValidatedRef = useRef(false);
+  useEffect(() => {
+    if (allHighConf && !validated && !autoValidatedRef.current && Object.keys(fields).length > 0) {
+      autoValidatedRef.current = true;
+      handleValidate();
+    }
+  }, [allHighConf, fields]);
 
   const handleReject = () => {
     if (onReject) onReject(doc.id, "Rejected during review");
@@ -160,7 +179,7 @@ function DocumentResult({ doc, onClose, onApprove, onReject }) {
               <div><strong style={{ color: "#334155" }}>File:</strong> {doc.name}</div>
               <div><strong style={{ color: "#334155" }}>Type:</strong> {doc.result?.documentType || "Document"}</div>
               <div><strong style={{ color: "#334155" }}>Confidence:</strong>{" "}
-                <span style={{ color: confidence >= 0.75 ? "#16a34a" : "#dc2626", fontWeight: 600 }}>{fmtConf(confidence)}</span>
+                <span style={{ color: (avgConfidence ?? confidence) >= 0.75 ? "#16a34a" : "#dc2626", fontWeight: 600 }}>{fmtConf(avgConfidence ?? confidence)}</span>
               </div>
               <div><strong style={{ color: "#334155" }}>Pages:</strong> {doc.result?.pages || "—"}</div>
               <div><strong style={{ color: "#334155" }}>Model:</strong> {doc.result?.model || "azure-content-understanding"}</div>
