@@ -1,118 +1,188 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback } from "react";
 import UploadZone from "./components/UploadZone";
 import DocumentQueue from "./components/DocumentQueue";
 import HumanReview from "./components/HumanReview";
 import ResultsPanel from "./components/ResultsPanel";
 import Header from "./components/Header";
+import { processDocument, approveDocument, rejectDocument } from "./services/api";
 import "./styles/global.css";
 
 export default function App() {
-  const [documents, setDocuments] = useState([]);
-  const [activeTab, setActiveTab] = useState("upload");
-  const [reviewQueue, setReviewQueue] = useState([]);
+  const [documents, setDocuments]         = useState([]);
+  const [activeTab, setActiveTab]         = useState("upload");
+  const [reviewQueue, setReviewQueue]     = useState([]);
   const [processedDocs, setProcessedDocs] = useState([]);
 
   const pendingReview = reviewQueue.filter((d) => d.status === "pending_review");
 
   const handleFilesAdded = useCallback((files) => {
     const newDocs = files.map((file) => ({
-      id: crypto.randomUUID(),
+      id:         crypto.randomUUID(),
       file,
-      name: file.name,
-      size: file.size,
-      type: file.type,
-      status: "queued",
-      progress: 0,
+      name:       file.name,
+      size:       file.size,
+      type:       file.type,
+      status:     "queued",
+      progress:   0,
       uploadedAt: new Date().toISOString(),
     }));
     setDocuments((prev) => [...prev, ...newDocs]);
     setActiveTab("queue");
-    simulateProcessing(newDocs);
+    processDocuments(newDocs);
   }, []);
 
-  const simulateProcessing = (docs) => {
-    docs.forEach((doc) => {
-      // Simulate upload progress
-      let progress = 0;
-      const uploadInterval = setInterval(() => {
-        progress += Math.random() * 20 + 5;
-        if (progress >= 100) {
-          progress = 100;
-          clearInterval(uploadInterval);
-          setDocuments((prev) =>
-            prev.map((d) =>
-              d.id === doc.id ? { ...d, progress: 100, status: "analyzing" } : d
-            )
-          );
-          // Simulate Azure analysis
-          setTimeout(() => {
-            const confidence = Math.random();
-            const result = generateMockResult(doc, confidence);
+  const processDocuments = (docs) => {
+    docs.forEach(async (doc) => {
 
-            setDocuments((prev) =>
-              prev.map((d) =>
-                d.id === doc.id
-                  ? {
-                      ...d,
-                      status: confidence < 0.75 ? "needs_review" : "completed",
-                      confidence,
-                      result,
-                    }
-                  : d
-              )
-            );
+      // Show analyzing state immediately
+      setDocuments((prev) =>
+        prev.map((d) => d.id === doc.id ? { ...d, status: "analyzing", progress: 20 } : d)
+      );
 
-            if (confidence < 0.75) {
-              setReviewQueue((prev) => [
-                ...prev,
-                {
-                  ...doc,
-                  status: "pending_review",
-                  confidence,
-                  result,
-                },
-              ]);
-            } else {
-              setProcessedDocs((prev) => [
-                ...prev,
-                { ...doc, confidence, result, reviewedAt: new Date().toISOString() },
-              ]);
-            }
-          }, 2000 + Math.random() * 2000);
-        }
+      // Animate progress bar while waiting for Logic App
+      const progressTimer = setInterval(() => {
         setDocuments((prev) =>
-          prev.map((d) => (d.id === doc.id ? { ...d, progress } : d))
+          prev.map((d) =>
+            d.id === doc.id && d.progress < 85
+              ? { ...d, progress: d.progress + 3 }
+              : d
+          )
         );
-      }, 200);
+      }, 1000);
+
+      try {
+        // Call real Logic App — waits for Cosmos DB to have completed result
+        const res    = await processDocument(doc.file);
+        const result = res.document;
+
+        clearInterval(progressTimer);
+
+        // Normalise to what UI components expect
+        const normalisedResult = {
+          documentType:    result.documentType    || "Document",
+          confidence:      result.confidence      ?? 0,
+          extractedFields: result.extractedFields || {},
+          tags:            result.tags            || [],
+          processingTime:  result.processingTime  || "—",
+          model:           result.model           || "azure-content-understanding",
+          rawText:         result.rawText         || "",
+          pages:           result.pages           || 0,
+          status:          result.status,
+          id:              result.id,
+        };
+
+        setDocuments((prev) =>
+          prev.map((d) =>
+            d.id === doc.id
+              ? {
+                  ...d,
+                  progress:   100,
+                  status:     result.status,
+                  confidence: result.confidence,
+                  result:     normalisedResult,
+                  backendId:  result.id,
+                }
+              : d
+          )
+        );
+
+        if (result.status === "needs_review") {
+          // Goes to Human Review tab with REAL extracted fields
+          setReviewQueue((prev) => [
+            ...prev,
+            {
+              ...doc,
+              status:     "pending_review",
+              confidence: result.confidence,
+              result:     normalisedResult,
+              backendId:  result.id,
+            },
+          ]);
+        } else {
+          // Goes to Results tab
+          setProcessedDocs((prev) => [
+            ...prev,
+            {
+              ...doc,
+              confidence:    result.confidence,
+              result:        normalisedResult,
+              backendId:     result.id,
+              humanReviewed: false,
+              reviewedAt:    new Date().toISOString(),
+            },
+          ]);
+        }
+
+      } catch (err) {
+        clearInterval(progressTimer);
+        console.error("[App] Processing failed for", doc.name, "-", err.message);
+        setDocuments((prev) =>
+          prev.map((d) =>
+            d.id === doc.id ? { ...d, status: "rejected", progress: 100 } : d
+          )
+        );
+      }
     });
   };
 
-  const handleReviewApprove = (docId, correctedData) => {
-    const doc = reviewQueue.find((d) => d.id === docId);
-    if (doc) {
-      const reviewed = {
-        ...doc,
-        status: "completed",
-        result: correctedData || doc.result,
-        humanReviewed: true,
-        reviewedAt: new Date().toISOString(),
-      };
-      setProcessedDocs((prev) => [...prev, reviewed]);
-      setReviewQueue((prev) =>
-        prev.map((d) => (d.id === docId ? { ...d, status: "approved" } : d))
-      );
-      setDocuments((prev) =>
-        prev.map((d) => (d.id === docId ? { ...d, status: "completed" } : d))
-      );
-    }
-  };
+  const handleReviewApprove = async (docId, correctedData) => {
+    const doc = reviewQueue.find((d) => d.id === docId)
+             || processedDocs.find((d) => d.id === docId);
+    if (!doc) return;
 
-  const handleReviewReject = (docId, reason) => {
+    if (doc.backendId) {
+      try {
+        await approveDocument(
+          doc.backendId,
+          correctedData?.extractedFields,
+          correctedData?.documentType
+        );
+      } catch (err) {
+        console.error("[App] Approve failed:", err.message);
+      }
+    }
+
+    const reviewed = {
+      ...doc,
+      status:        "completed",
+      result:        correctedData || doc.result,
+      humanReviewed: true,
+      reviewedAt:    new Date().toISOString(),
+    };
+
+    setProcessedDocs((prev) => {
+      const exists = prev.find((d) => d.id === docId);
+      return exists
+        ? prev.map((d) => d.id === docId ? reviewed : d)
+        : [...prev, reviewed];
+    });
     setReviewQueue((prev) =>
-      prev.map((d) => (d.id === docId ? { ...d, status: "rejected", rejectReason: reason } : d))
+      prev.map((d) => d.id === docId ? { ...d, status: "approved" } : d)
     );
     setDocuments((prev) =>
-      prev.map((d) => (d.id === docId ? { ...d, status: "rejected" } : d))
+      prev.map((d) => d.id === docId ? { ...d, status: "completed" } : d)
+    );
+  };
+
+  const handleReviewReject = async (docId, reason) => {
+    const doc = reviewQueue.find((d) => d.id === docId)
+             || processedDocs.find((d) => d.id === docId);
+
+    if (doc?.backendId) {
+      try {
+        await rejectDocument(doc.backendId, reason);
+      } catch (err) {
+        console.error("[App] Reject failed:", err.message);
+      }
+    }
+
+    setReviewQueue((prev) =>
+      prev.map((d) =>
+        d.id === docId ? { ...d, status: "rejected", rejectReason: reason } : d
+      )
+    );
+    setDocuments((prev) =>
+      prev.map((d) => d.id === docId ? { ...d, status: "rejected" } : d)
     );
   };
 
@@ -131,9 +201,9 @@ export default function App() {
           onClick={() => setActiveTab("queue")}
         >
           <span className="tab-icon">⏳</span> Processing
-          {documents.filter((d) => ["queued", "analyzing"].includes(d.status)).length > 0 && (
+          {documents.filter((d) => ["queued","analyzing"].includes(d.status)).length > 0 && (
             <span className="badge pulse">
-              {documents.filter((d) => ["queued", "analyzing"].includes(d.status)).length}
+              {documents.filter((d) => ["queued","analyzing"].includes(d.status)).length}
             </span>
           )}
         </button>
@@ -158,38 +228,23 @@ export default function App() {
       </nav>
 
       <main className="main-content">
-        {activeTab === "upload" && <UploadZone onFilesAdded={handleFilesAdded} />}
-        {activeTab === "queue" && <DocumentQueue documents={documents} />}
-        {activeTab === "review" && (
+        {activeTab === "upload"  && <UploadZone onFilesAdded={handleFilesAdded} />}
+        {activeTab === "queue"   && <DocumentQueue documents={documents} />}
+        {activeTab === "review"  && (
           <HumanReview
             queue={reviewQueue}
             onApprove={handleReviewApprove}
             onReject={handleReviewReject}
           />
         )}
-        {activeTab === "results" && <ResultsPanel documents={processedDocs} onApprove={handleReviewApprove} onReject={handleReviewReject} />}
+        {activeTab === "results" && (
+          <ResultsPanel
+            documents={processedDocs}
+            onApprove={handleReviewApprove}
+            onReject={handleReviewReject}
+          />
+        )}
       </main>
     </div>
   );
-}
-
-function generateMockResult(doc, confidence) {
-  const docTypes = ["Invoice", "Contract", "Receipt", "ID Document", "Medical Record", "Legal Filing"];
-  const docType = docTypes[Math.floor(Math.random() * docTypes.length)];
-  return {
-    documentType: docType,
-    confidence: confidence,
-    extractedFields: {
-      documentId: `DOC-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
-      date: new Date(Date.now() - Math.random() * 365 * 24 * 60 * 60 * 1000).toLocaleDateString(),
-      amount: docType === "Invoice" || docType === "Receipt" ? `$${(Math.random() * 10000).toFixed(2)}` : null,
-      vendor: docType === "Invoice" ? ["Acme Corp", "TechSupply Ltd", "Global Services"][Math.floor(Math.random() * 3)] : null,
-      language: "English",
-      pages: Math.ceil(Math.random() * 5),
-    },
-    tags: ["processed", docType.toLowerCase().replace(" ", "_"), confidence > 0.75 ? "high-confidence" : "low-confidence"],
-    rawText: `[Extracted text from ${doc.name} — ${Math.floor(Math.random() * 500 + 100)} words]`,
-    processingTime: `${(Math.random() * 3 + 0.5).toFixed(2)}s`,
-    model: "azure-content-understanding-v1",
-  };
 }
