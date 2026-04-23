@@ -5,6 +5,7 @@ import HumanReview from "./components/HumanReview";
 import ResultsPanel from "./components/ResultsPanel";
 import Header from "./components/Header";
 import { processDocument, approveDocument, rejectDocument } from "./services/api";
+import Dashboard from "./dashboard/OperationalDashboard";
 import "./styles/global.css";
 
 // Compute real average confidence from Azure CU extractedFields
@@ -246,6 +247,12 @@ export default function App() {
             <span className="badge success">{processedDocs.length}</span>
           )}
         </button>
+        <button
+          className={`tab-btn ${activeTab === "dashboard" ? "active" : ""}`}
+          onClick={() => setActiveTab("dashboard")}
+        >
+          <span className="tab-icon">📊</span> Dashboard
+        </button>
       </nav>
 
       <main className="main-content">
@@ -263,6 +270,13 @@ export default function App() {
             documents={processedDocs}
             onApprove={handleReviewApprove}
             onReject={handleReviewReject}
+          />
+        )}
+        {activeTab === "dashboard" && (
+          <Dashboard
+            processedDocs={processedDocs}
+            reviewQueue={reviewQueue}
+            documents={documents}
           />
         )}
       </main>
