@@ -86,14 +86,17 @@ export default function App() {
           id:              result.id,
         };
 
+        // Use avgConf to determine real routing — ignore blob's hardcoded status
+        const realStatus = avgConf < 0.75 ? "needs_review" : "completed";
+
         setDocuments((prev) =>
           prev.map((d) =>
             d.id === doc.id
               ? {
                   ...d,
                   progress:   100,
-                  status:     result.status,
-                  confidence: result.confidence,
+                  status:     realStatus,
+                  confidence: avgConf,
                   result:     normalisedResult,
                   backendId:  result.id,
                 }
@@ -101,16 +104,17 @@ export default function App() {
           )
         );
 
-        if (result.status === "needs_review") {
+        if (realStatus === "needs_review") {
           // Goes to Human Review tab with REAL extracted fields
           setReviewQueue((prev) => [
             ...prev,
             {
               ...doc,
+              file:          doc.file,
               status:        "pending_review",
               confidence:    avgConf,
               avgConfidence: avgConf,
-              result:        normalisedResult,
+              result:        { ...normalisedResult, status: "needs_review" },
               backendId:     result.id,
             },
           ]);
