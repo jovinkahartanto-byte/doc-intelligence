@@ -299,8 +299,8 @@ export default function App() {
           fontWeight: 600,
           letterSpacing: "0.04em",
         }}>
-          ⚡ DEMO MODE — Mock EPF/SOCSO/EIS data · No Azure backend · Set{" "}
-          <code style={{ background: "rgba(0,0,0,0.25)", padding: "1px 5px", borderRadius: 3 }}>DEMO_MODE = false</code>
+          Set{" "}
+          <code style={{ background: "rgba(0,0,0,0.25)", padding: "1px 5px", borderRadius: 3 }}></code>
           {" "}in App.jsx to go live
         </div>
       )}
